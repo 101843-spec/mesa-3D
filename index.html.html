@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mesa 3D Resistente y Simulador de Sismo</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background-color: #1a1a1a;
+      user-select: none;
+    }
+
+    #canvas-container {
+      width: 100vw;
+      height: 100vh;
+      display: block;
+    }
+
+    #ui-container {
+      position: absolute;
+      top: 20px;
+      left: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      z-index: 10;
+    }
+
+    .btn {
+      background: rgba(30, 30, 30, 0.85);
+      color: #ffffff;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      padding: 12px 20px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      backdrop-filter: blur(10px);
+      transition: all 0.3s ease;
+      box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .btn:hover {
+      background: rgba(50, 50, 50, 0.95);
+      border-color: rgba(255, 255, 255, 0.5);
+      transform: translateY(-2px);
+    }
+
+    .btn:active {
+      transform: translateY(0);
+    }
+
+    .btn-earthquake {
+      border-color: #ff4757;
+      color: #ff6b81;
+    }
+
+    .btn-earthquake.active {
+      background: #ff4757;
+      color: white;
+      animation: pulse 1s infinite;
+    }
+
+    @keyframes pulse {
+      0% { box-shadow: 0 0 0 0 rgba(255, 71, 87, 0.7); }
+      70% { box-shadow: 0 0 0 10px rgba(255, 71, 87, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(255, 71, 87, 0); }
+    }
+
+    #info-panel {
+      position: absolute;
+      bottom: 20px;
+      left: 20px;
+      background: rgba(0, 0, 0, 0.7);
+      color: #aaa;
+      padding: 10px 15px;
+      border-radius: 6px;
+      font-size: 12px;
+      backdrop-filter: blur(5px);
+      pointer-events: none;
+    }
+  </style>
+
+  <!-- Three.js y OrbitControls -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+</head>
+<body>
+
+  <div id="ui-container">
+    <button id="toggle-leg-btn" class="btn">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+      <span id="leg-btn-text">Quitar Pata</span>
+    </button>
+    <button id="earthquake-btn" class="btn btn-earthquake">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"></path></svg>
+      <span>Simular Sismo</span>
+    </button>
+  </div>
+
+  <div id="info-panel">
+    Usa el clic izquierdo para rotar | Clic derecho para desplazar | Rueda para zoom
+  </div>
+
+  <div id="canvas-container"></div>
+
+  <script>
+    // Variables principales
+    let scene, camera, renderer, controls;
+    let frontRightLeg;
+    let legVisible = true;
+    let isQuakeActive = false;
+    let quakeTime = 0;
+    let chargingLedMat; // Material para animar la luz del cargador inalámbrico
+    const originalCamPos = new THREE.Vector3();
+    const originalTarget = new THREE.Vector3();
+
+    init();
+    animate();
+
+    function init() {
+      const container = document.getElementById('canvas-container');
+
+      // Escena
+      scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x1e1e24);
+      scene.fog = new THREE.FogExp2(0x1e1e24, 0.03);
+
+      // Cámara
+      camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+      camera.position.set(2.2, 1.8, 2.5);
+
+      // Renderizador
+      renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      container.appendChild(renderer.domElement);
+
+      // Controles de cámara
+      controls = new THREE.OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.05;
+      controls.maxPolarAngle = Math.PI / 2 + 0.05; // No ir por debajo del suelo
+      controls.minDistance = 1;
+      controls.maxDistance = 6;
+      controls.target.set(0, 0.5, 0);
+
+      // Iluminación
+      setupLighting();
+
+      // Construcción del Entorno y Mesa
+      createRoom();
+      createDesk();
+
+      // Event Listeners
+      window.addEventListener('resize', onWindowResize);
+      
+      document.getElementById('toggle-leg-btn').addEventListener('click', toggleLeg);
+      document.getElementById('earthquake-btn').addEventListener('click', toggleEarthquake);
+    }
+
+    function setupLighting() {
+      const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+      scene.add(ambientLight);
+
+      const mainLight = new THREE.DirectionalLight(0xfff5e6, 0.9);
+      mainLight.position.set(3, 4, 2);
+      mainLight.castShadow = true;
+      mainLight.shadow.mapSize.width = 2048;
+      mainLight.shadow.mapSize.height = 2048;
+      mainLight.shadow.bias = -0.0001;
+      scene.add(mainLight);
+
+      const fillLight = new THREE.DirectionalLight(0x88bbff, 0.3);
+      fillLight.position.set(-3, 2, -2);
+      scene.add(fillLight);
+    }
+
+    function createRoom() {
+      // Suelo
+      const floorGeo = new THREE.PlaneGeometry(10, 10);
+      const floorMat = new THREE.MeshStandardMaterial({ 
+        color: 0x333338, 
+        roughness: 0.8, 
+        metalness: 0.1 
+      });
+      const floor = new THREE.Mesh(floorGeo, floorMat);
+      floor.rotation.x = -Math.PI / 2;
+      floor.receiveShadow = true;
+      scene.add(floor);
+
+      // Pared trasera
+      const wallGeo = new THREE.PlaneGeometry(10, 6);
+      const wallMat = new THREE.MeshStandardMaterial({ color: 0x25252a, roughness: 0.9 });
+      const wall = new THREE.Mesh(wallGeo, wallMat);
+      wall.position.set(0, 3, -3);
+      wall.receiveShadow = true;
+      scene.add(wall);
+    }
+
+    function createDesk() {
+      const deskGroup = new THREE.Group();
+
+      // Materiales generales de la mesa
+      const woodMat = new THREE.MeshStandardMaterial({ color: 0x8A5229, roughness: 0.4 });
+      const metalMat = new THREE.MeshStandardMaterial({ color: 0x222222, metalness: 0.8, roughness: 0.2 });
+
+      // Dimensiones de la mesa (Reducida y compacta)
+      const tableWidth = 1.1;
+      const tableDepth = 0.65;
+      const tableHeight = 0.75;
+      const topThickness = 0.04;
+      const legRadius = 0.025;
+
+      // 1. Tablero principal
+      const topGeo = new THREE.BoxGeometry(tableWidth, topThickness, tableDepth);
+      const topMesh = new THREE.Mesh(topGeo, woodMat);
+      topMesh.position.y = tableHeight - topThickness / 2;
+      topMesh.castShadow = true;
+      topMesh.receiveShadow = true;
+      deskGroup.add(topMesh);
+
+      // 2. Módulo de Almacenamiento Inferior Doble
+      const storageMat = new THREE.MeshStandardMaterial({ color: 0x6e3f1e, roughness: 0.5 });
+      const wallThickness = 0.02;
+      const cubicleDepth = tableDepth - 0.05;
+      const underTopY = tableHeight - topThickness;
+
+      // -- MÓDULO VERTICAL PARA MOCHILA (A LA DERECHA) --
+      const bagWidth = 0.32;
+      const bagHeight = 0.50; // Rectángulo vertical alto
+      const bagX = (tableWidth / 2) - (bagWidth / 2) - 0.04;
+      const bagCenterY = underTopY - (bagHeight / 2);
+
+      // Paredes Módulo Vertical (Mochila)
+      const bagRightWall = new THREE.Mesh(new THREE.BoxGeometry(wallThickness, bagHeight, cubicleDepth), storageMat);
+      bagRightWall.position.set(bagX + bagWidth / 2 - wallThickness / 2, bagCenterY, 0);
+
+      const bagMiddleWall = new THREE.Mesh(new THREE.BoxGeometry(wallThickness, bagHeight, cubicleDepth), storageMat);
+      bagMiddleWall.position.set(bagX - bagWidth / 2 + wallThickness / 2, bagCenterY, 0);
+
+      const bagBottomWall = new THREE.Mesh(new THREE.BoxGeometry(bagWidth, wallThickness, cubicleDepth), storageMat);
+      bagBottomWall.position.set(bagX, bagCenterY - bagHeight / 2 + wallThickness / 2, 0);
+
+      const bagBackWall = new THREE.Mesh(new THREE.BoxGeometry(bagWidth, bagHeight, wallThickness), storageMat);
+      bagBackWall.position.set(bagX, bagCenterY, -cubicleDepth / 2 + wallThickness / 2);
+
+      [bagRightWall, bagMiddleWall, bagBottomWall, bagBackWall].forEach(part => {
+        part.castShadow = true;
+        part.receiveShadow = true;
+        deskGroup.add(part);
+      });
+
+      // -- MÓDULO HORIZONTAL TIPO CAJÓN EXTENDIDO (A LA IZQUIERDA - Ocupa todo el lado rayado) --
+      const leftEdgeX = -(tableWidth / 2) + 0.04; // Extendido hasta la pata izquierda
+      const rightEdgeX = bagX - (bagWidth / 2);    // Conecta con el módulo vertical
+      const bookWidth = rightEdgeX - leftEdgeX;
+      const bookHeight = 0.18;                     // Cajón horizontal más amplio
+      const bookX = leftEdgeX + (bookWidth / 2);
+      const bookCenterY = underTopY - (bookHeight / 2);
+
+      const bookLeftWall = new THREE.Mesh(new THREE.BoxGeometry(wallThickness, bookHeight, cubicleDepth), storageMat);
+      bookLeftWall.position.set(bookX - bookWidth / 2 + wallThickness / 2, bookCenterY, 0);
+
+      const bookBottomWall = new THREE.Mesh(new THREE.BoxGeometry(bookWidth, wallThickness, cubicleDepth), storageMat);
+      bookBottomWall.position.set(bookX, bookCenterY - bookHeight / 2 + wallThickness / 2, 0);
+
+      const bookBackWall = new THREE.Mesh(new THREE.BoxGeometry(bookWidth, bookHeight, wallThickness), storageMat);
+      bookBackWall.position.set(bookX, bookCenterY, -cubicleDepth / 2 + wallThickness / 2);
+
+      [bookLeftWall, bookBottomWall, bookBackWall].forEach(part => {
+        part.castShadow = true;
+        part.receiveShadow = true;
+        deskGroup.add(part);
+      });
+
+      // 3. Patas de la Mesa
+      const legHeight = tableHeight - topThickness;
+      const legGeo = new THREE.CylinderGeometry(legRadius, legRadius, legHeight, 16);
+
+      const xPos = tableWidth / 2 - 0.05;
+      const zPos = tableDepth / 2 - 0.05;
+
+      // Patas fijas
+      const legPositions = [
+        [-xPos, legHeight / 2, -zPos], // Trasera Izquierda
+        [-xPos, legHeight / 2, zPos],  // Delantera Izquierda
+        [xPos, legHeight / 2, -zPos]   // Trasera Derecha
+      ];
+
+      legPositions.forEach(pos => {
+        const leg = new THREE.Mesh(legGeo, metalMat);
+        leg.position.set(...pos);
+        leg.castShadow = true;
+        leg.receiveShadow = true;
+        deskGroup.add(leg);
+      });
+
+      // Pata Delantera Derecha (Removible para ver los cables)
+      frontRightLeg = new THREE.Mesh(legGeo, metalMat);
+      frontRightLeg.position.set(xPos, legHeight / 2, zPos);
+      frontRightLeg.castShadow = true;
+      frontRightLeg.receiveShadow = true;
+      deskGroup.add(frontRightLeg);
+
+      // 4. Sistema de Cables oculto tras la pata
+      createCableSystem(deskGroup, xPos, zPos, legHeight, tableHeight);
+
+      // 5. Objetos sobre la mesa
+      createComputerSetup(deskGroup, tableHeight);
+
+      // 6. Centro de Carga Inalámbrico integrado en la mesa con Smartphone
+      createWirelessChargingPad(deskGroup, tableHeight);
+
+      // 7. Objetos distribuidos en sus respectivos compartimentos
+      createStorageContents(
+        deskGroup, 
+        bookX, 
+        bookCenterY - bookHeight / 2 + wallThickness, // Suelo del cajón de libros
+        bagX, 
+        bagCenterY - bagHeight / 2 + wallThickness   // Suelo del espacio vertical de mochila
+      );
+
+      scene.add(deskGroup);
+    }
+
+    function createCableSystem(deskGroup, x, z, legHeight, tableHeight) {
+      const cableGroup = new THREE.Group();
+      const cableMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.8 });
+
+      // Generar curva para los cables que bajan por la pata
+      const curve = new THREE.CatmullRomCurve3([
+        new THREE.Vector3(0, tableHeight - 0.04, -0.15),
+        new THREE.Vector3(x - 0.01, tableHeight - 0.05, z - 0.02),
+        new THREE.Vector3(x - 0.01, legHeight * 0.7, z - 0.02),
+        new THREE.Vector3(x - 0.01, legHeight * 0.3, z - 0.02),
+        new THREE.Vector3(x - 0.05, 0.02, z)
+      ]);
+
+      const tubeGeo = new THREE.TubeGeometry(curve, 30, 0.007, 8, false);
+      const cableMesh = new THREE.Mesh(tubeGeo, cableMat);
+      cableMesh.castShadow = true;
+      cableGroup.add(cableMesh);
+
+      // Segundo cable paralelo (Ej. energía y HDMI)
+      const curve2 = new THREE.CatmullRomCurve3([
+        new THREE.Vector3(0.05, tableHeight - 0.04, -0.15),
+        new THREE.Vector3(x + 0.01, tableHeight - 0.05, z - 0.01),
+        new THREE.Vector3(x + 0.01, legHeight * 0.6, z - 0.01),
+        new THREE.Vector3(x + 0.01, legHeight * 0.2, z - 0.01),
+        new THREE.Vector3(x + 0.05, 0.02, z + 0.02)
+      ]);
+
+      const tubeGeo2 = new THREE.TubeGeometry(curve2, 30, 0.005, 8, false);
+      const cableMesh2 = new THREE.Mesh(tubeGeo2, new THREE.MeshStandardMaterial({ color: 0x05336b, roughness: 0.7 }));
+      cableMesh2.castShadow = true;
+      cableGroup.add(cableMesh2);
+
+      deskGroup.add(cableGroup);
+    }
+
+    function createComputerSetup(deskGroup, tableHeight) {
+      const compGroup = new THREE.Group();
+      compGroup.position.set(-0.08, tableHeight, -0.05);
+
+      const metalMat = new THREE.MeshStandardMaterial({ color: 0x222225, metalness: 0.8, roughness: 0.3 });
+      const screenOnMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.2, emissive: 0x0d2035, emissiveIntensity: 0.8 });
+
+      // Base del monitor
+      const baseGeo = new THREE.BoxGeometry(0.18, 0.008, 0.15);
+      const base = new THREE.Mesh(baseGeo, metalMat);
+      base.position.set(0, 0.004, -0.1);
+      base.castShadow = true;
+      compGroup.add(base);
+
+      // Soporte
+      const standGeo = new THREE.BoxGeometry(0.03, 0.18, 0.02);
+      const stand = new THREE.Mesh(standGeo, metalMat);
+      stand.position.set(0, 0.09, -0.15);
+      stand.castShadow = true;
+      compGroup.add(stand);
+
+      // Pantalla
+      const monitorGeo = new THREE.BoxGeometry(0.52, 0.32, 0.015);
+      const monitor = new THREE.Mesh(monitorGeo, metalMat);
+      monitor.position.set(0, 0.23, -0.14);
+      monitor.castShadow = true;
+      compGroup.add(monitor);
+
+      // Display activo
+      const displayGeo = new THREE.PlaneGeometry(0.50, 0.30);
+      const display = new THREE.Mesh(displayGeo, screenOnMat);
+      display.position.set(0, 0.23, -0.132);
+      compGroup.add(display);
+
+      // Teclado
+      const kbMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.6 });
+      const kbGeo = new THREE.BoxGeometry(0.36, 0.01, 0.12);
+      const keyboard = new THREE.Mesh(kbGeo, kbMat);
+      keyboard.position.set(-0.02, 0.005, 0.12);
+      keyboard.castShadow = true;
+      compGroup.add(keyboard);
+
+      // Teclas (Detalle)
+      const keysGeo = new THREE.BoxGeometry(0.34, 0.004, 0.10);
+      const keysMat = new THREE.MeshStandardMaterial({ color: 0x333333, roughness: 0.8 });
+      const keys = new THREE.Mesh(keysGeo, keysMat);
+      keys.position.set(-0.02, 0.011, 0.12);
+      compGroup.add(keys);
+
+      // Mousepad
+      const padGeo = new THREE.BoxGeometry(0.18, 0.002, 0.20);
+      const padMat = new THREE.MeshStandardMaterial({ color: 0x111115, roughness: 0.9 });
+      const pad = new THREE.Mesh(padGeo, padMat);
+      pad.position.set(0.28, 0.001, 0.12);
+      pad.receiveShadow = true;
+      compGroup.add(pad);
+
+      // Mouse Inalámbrico
+      const mouseGeo = new THREE.BoxGeometry(0.055, 0.025, 0.095);
+      const mouseMat = new THREE.MeshStandardMaterial({ color: 0x222222, metalness: 0.5, roughness: 0.3 });
+      const mouse = new THREE.Mesh(mouseGeo, mouseMat);
+      mouse.position.set(0.28, 0.0125, 0.12);
+      mouse.rotation.y = -0.1;
+      mouse.castShadow = true;
+      compGroup.add(mouse);
+
+      deskGroup.add(compGroup);
+    }
+
+    function createWirelessChargingPad(deskGroup, tableHeight) {
+      const chargerGroup = new THREE.Group();
+      // Posición sobre la parte izquierda/frontal del tablero
+      chargerGroup.position.set(-0.38, tableHeight, 0.10);
+
+      // Base incrustada/Flush Qi Pad
+      const ringGeo = new THREE.CylinderGeometry(0.065, 0.065, 0.003, 32);
+      const ringMat = new THREE.MeshStandardMaterial({ color: 0x111111, metalness: 0.9, roughness: 0.2 });
+      const chargerBase = new THREE.Mesh(ringGeo, ringMat);
+      chargerBase.position.y = 0.0015;
+      chargerBase.receiveShadow = true;
+      chargerGroup.add(chargerBase);
+
+      // Anillo LED emisor de carga Qi
+      const ledGeo = new THREE.RingGeometry(0.045, 0.055, 32);
+      chargingLedMat = new THREE.MeshBasicMaterial({ color: 0x00ff88, side: THREE.DoubleSide });
+      const ledRing = new THREE.Mesh(ledGeo, chargingLedMat);
+      ledRing.rotation.x = -Math.PI / 2;
+      ledRing.position.y = 0.0032;
+      chargerGroup.add(ledRing);
+
+      // Simbolito Qi Central
+      const qiCoreGeo = new THREE.CircleGeometry(0.015, 16);
+      const qiCoreMat = new THREE.MeshBasicMaterial({ color: 0x00ff88, side: THREE.DoubleSide });
+      const qiCore = new THREE.Mesh(qiCoreGeo, qiCoreMat);
+      qiCore.rotation.x = -Math.PI / 2;
+      qiCore.position.y = 0.0032;
+      chargerGroup.add(qiCore);
+
+      // Celular recargándose en el pad
+      const phoneGroup = new THREE.Group();
+      phoneGroup.position.set(0, 0.003, 0);
+
+      // Cuerpo del teléfono
+      const bodyGeo = new THREE.BoxGeometry(0.072, 0.008, 0.145);
+      const bodyMat = new THREE.MeshStandardMaterial({ color: 0x1f1f24, metalness: 0.9, roughness: 0.2 });
+      const phoneBody = new THREE.Mesh(bodyGeo, bodyMat);
+      phoneBody.position.y = 0.004;
+      phoneBody.castShadow = true;
+      phoneGroup.add(phoneBody);
+
+      // Pantalla del teléfono (mostrando estado de carga)
+      const screenGeo = new THREE.PlaneGeometry(0.068, 0.138);
+      const phoneScreenMat = new THREE.MeshStandardMaterial({ 
+        color: 0x051525, 
+        emissive: 0x004422, 
+        emissiveIntensity: 0.6,
+        roughness: 0.1 
+      });
+      const phoneScreen = new THREE.Mesh(screenGeo, phoneScreenMat);
+      phoneScreen.rotation.x = -Math.PI / 2;
+      phoneScreen.position.y = 0.0081;
+      phoneGroup.add(phoneScreen);
+
+      chargerGroup.add(phoneGroup);
+      deskGroup.add(chargerGroup);
+    }
+
+    function createStorageContents(deskGroup, bookX, bookFloorY, bagX, bagFloorY) {
+      const contentsGroup = new THREE.Group();
+
+      // 1. MOCHILA REAL VERTICAL (En el rectángulo vertical a la derecha)
+      const backpackGroup = new THREE.Group();
+      const bagMat = new THREE.MeshStandardMaterial({ color: 0x1d3557, roughness: 0.7 }); // Azul marino
+      const pocketMat = new THREE.MeshStandardMaterial({ color: 0x457b9d, roughness: 0.8 });
+
+      // Cuerpo principal de la mochila (Vertical)
+      const bodyGeo = new THREE.BoxGeometry(0.22, 0.38, 0.16);
+      const body = new THREE.Mesh(bodyGeo, bagMat);
+      body.castShadow = true;
+      backpackGroup.add(body);
+
+      // Bolsillo frontal
+      const pocketGeo = new THREE.BoxGeometry(0.18, 0.22, 0.05);
+      const pocket = new THREE.Mesh(pocketGeo, pocketMat);
+      pocket.position.set(0, -0.04, 0.09);
+      pocket.castShadow = true;
+      backpackGroup.add(pocket);
+
+      // Asa superior
+      const handleGeo = new THREE.BoxGeometry(0.08, 0.02, 0.02);
+      const handle = new THREE.Mesh(handleGeo, bagMat);
+      handle.position.set(0, 0.20, 0);
+      backpackGroup.add(handle);
+
+      // Ubicar la mochila erguida y perfectamente alojada en el compartimento vertical
+      backpackGroup.position.set(bagX, bagFloorY + 0.19, 0);
+      contentsGroup.add(backpackGroup);
+
+      // 2. LIBROS Y CUADERNOS APILADOS HORIZONTALMENTE (En el cajón horizontal extendido de la izquierda)
+      const notebookColors = [0xe63946, 0x2a9d8f, 0xe9c46a, 0x264653];
+      let currentY = bookFloorY + 0.01;
+
+      for (let i = 0; i < 4; i++) {
+        const nbMat = new THREE.MeshStandardMaterial({ color: notebookColors[i], roughness: 0.5 });
+        const nbGeo = new THREE.BoxGeometry(0.28, 0.022, 0.34);
+        const notebook = new THREE.Mesh(nbGeo, nbMat);
+        
+        notebook.position.set(bookX, currentY, 0);
+        notebook.rotation.y = (Math.random() - 0.5) * 0.04; // Pequeño ajuste para efecto natural
+        notebook.castShadow = true;
+        notebook.receiveShadow = true;
+        
+        contentsGroup.add(notebook);
+        currentY += 0.024; // Elevación para la pila horizontal
+      }
+
+      deskGroup.add(contentsGroup);
+    }
+
+    function toggleLeg() {
+      legVisible = !legVisible;
+      const btnText = document.getElementById('leg-btn-text');
+      
+      if (legVisible) {
+        frontRightLeg.visible = true;
+        btnText.textContent = "Quitar Pata";
+      } else {
+        frontRightLeg.visible = false;
+        btnText.textContent = "Poner Pata";
+      }
+    }
+
+    function toggleEarthquake() {
+      isQuakeActive = !isQuakeActive;
+      const btn = document.getElementById('earthquake-btn');
+
+      if (isQuakeActive) {
+        btn.classList.add('active');
+        originalCamPos.copy(camera.position);
+        originalTarget.copy(controls.target);
+      } else {
+        btn.classList.remove('active');
+        // Restaurar posición de forma suave
+        camera.position.copy(originalCamPos);
+        controls.target.copy(originalTarget);
+      }
+    }
+
+    function onWindowResize() {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    function animate() {
+      requestAnimationFrame(animate);
+
+      // Pulso de luz tenue en el pad inalámbrico para simular la carga
+      if (chargingLedMat) {
+        const time = Date.now() * 0.003;
+        chargingLedMat.opacity = 0.6 + Math.sin(time) * 0.4;
+      }
+
+      // Simulación de sismo (Sismo de cámara, la mesa permanece firme e intacta)
+      if (isQuakeActive) {
+        quakeTime += 0.3;
+        const intensity = 0.035;
+
+        // Movimiento caótico de terremoto en la cámara
+        camera.position.x = originalCamPos.x + (Math.sin(quakeTime * 1.5) * intensity) + (Math.cos(quakeTime * 3.2) * intensity * 0.5);
+        camera.position.y = originalCamPos.y + (Math.cos(quakeTime * 2.1) * intensity);
+        camera.position.z = originalCamPos.z + (Math.sin(quakeTime * 2.8) * intensity);
+
+        controls.target.x = originalTarget.x + (Math.cos(quakeTime * 2.0) * intensity * 0.5);
+        controls.target.y = originalTarget.y + (Math.sin(quakeTime * 2.5) * intensity * 0.5);
+      }
+
+      controls.update();
+      renderer.render(scene, camera);
+    }
+  </script>
+</body>
+</html>
